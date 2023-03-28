@@ -30,7 +30,7 @@ const selfUpdateArgs = {
 }
 
 const versionScopes = ["major", "minor", "patch"] as const
-type VersionScope = typeof versionScopes[number]
+type VersionScope = (typeof versionScopes)[number]
 
 const selfUpdateOpts = {
   "force": new BooleanParameter({

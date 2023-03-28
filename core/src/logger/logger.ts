@@ -6,7 +6,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-import { LogMetadata, LogEntry, CoreLog } from "./log-entry"
+import { LogMetadata, LogEntry, Log, CoreLogContext } from "./log-entry"
 import { Writer } from "./writers/base"
 import { CommandError, InternalError, ParameterError } from "../exceptions"
 import { TerminalWriter } from "./writers/terminal-writer"
@@ -294,11 +294,12 @@ export class Logger implements Required<LoggerConfigBase> {
      */
     name?: string
   } = {}) {
-    return new CoreLog({
+    return new Log<CoreLogContext>({
       parentConfigs: [],
       fixLevel,
       metadata,
       context: {
+        type: "coreLog",
         name,
       },
       root: this,

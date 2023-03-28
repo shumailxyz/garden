@@ -39,23 +39,27 @@ export interface WorkflowStepMetadata {
   index: number
 }
 
-interface CoreLogContext {
-  name?: string
+interface BaseContext {
+  type: "coreLog" | "actionLog"
 }
 
-interface ActionLogContext {
+export interface CoreLogContext extends BaseContext {
+  type: "coreLog"
+  name?: string
+}
+export interface ActionLogContext extends BaseContext {
+  type: "actionLog"
   actionName: string
   actionKind: string
 }
 
 // Common Log config that the class implements and other interfaces pick / omit from.
-interface LogConfig {
+interface LogConfig<C extends BaseContext> {
   /**
    * A unique ID that's assigned to the config when it's created.
    */
   key: string
   timestamp: string
-  type: "coreLog" | "actionLog"
   /**
    * Additional metadata to pass to the log context. The metadata gets added to
    * all log entries which can optionally extend it.
@@ -70,7 +74,7 @@ interface LogConfig {
    *  const debugLog = log.createLog({ fixLevel: LogLevel.debug })
    */
   fixLevel?: LogLevel
-  context: CoreLogContext | ActionLogContext
+  context: C
   /**
    * Append the duration from when the log context was created and until the
    * success or error methods or call to the message.
@@ -79,18 +83,13 @@ interface LogConfig {
   showDuration?: boolean
 }
 
-interface LogConstructor extends Omit<LogConfig, "key" | "timestamp" | "type"> {
+interface LogConstructor<C extends BaseContext> extends Omit<LogConfig<C>, "key" | "timestamp"> {
   root: Logger
-  parentConfigs: LogConfig[]
-}
-interface CoreLogConstructor extends LogConstructor {
-  context: CoreLogContext
-}
-interface ActionLogConstructor extends Omit<LogConstructor, "showDuration"> {
-  context: ActionLogContext
+  parentConfigs: LogConfig<C>[]
 }
 
-interface CreateCoreLogParams extends Pick<LogConfig, "metadata" | "fixLevel" | "section" | "showDuration"> {
+interface CreateLogParams<C extends BaseContext>
+  extends Pick<LogConfig<C>, "metadata" | "fixLevel" | "section" | "showDuration"> {
   /**
    * The name of the log context. Will be printed as the "section" part of the log lines
    * belonging to this context.
@@ -98,10 +97,9 @@ interface CreateCoreLogParams extends Pick<LogConfig, "metadata" | "fixLevel" | 
    */
   name?: string
 }
-interface CreateActionLogParams extends Pick<LogConfig, "metadata" | "fixLevel"> {}
+// interface CreateActionLogParams<C extends BaseContext> extends Pick<LogConfig<C>, "metadata" | "fixLevel"> {}
 
-interface LogEntryBase extends Pick<LogConfig, "metadata" | "section"> {
-  type: "coreLogEntry" | "actionLogEntry"
+interface LogEntryBase<C extends BaseContext = BaseContext> extends Pick<LogConfig<C>, "metadata" | "section"> {
   timestamp: string
   /**
    * A unique ID that's assigned to the entry when it's created.
@@ -116,20 +114,12 @@ interface LogEntryBase extends Pick<LogConfig, "metadata" | "section"> {
    * Metadata about the context in which the log was created.
    * Used for rendering contextual information alongside the actual message.
    */
-  context: LogContext
+  context: C
   msg?: string
   symbol?: LogSymbol
   data?: any
   dataFormat?: "json" | "yaml"
   error?: GardenError
-}
-interface CoreLogEntry extends LogEntryBase {
-  type: "coreLogEntry"
-  context: CoreLogContext
-}
-interface ActionLogEntry extends LogEntryBase {
-  type: "actionLogEntry"
-  context: ActionLogContext
 }
 
 interface LogParams
@@ -138,12 +128,9 @@ interface CreateLogEntryParams extends LogParams {
   level: LogLevel
 }
 
-// Setting these utility union types so that it's easy to add more.
-export type LogEntry = CoreLogEntry | ActionLogEntry
-type LogContext = CoreLogContext | ActionLogContext
-type LogType = CoreLog | ActionLog
-type CreateLogParams = CreateCoreLogParams | CreateActionLogParams
-
+export interface LogEntry<C extends BaseContext = CoreLogContext | ActionLogContext> extends LogEntryBase {
+  context: C
+}
 export function createActionLog({
   log,
   actionName,
@@ -155,31 +142,32 @@ export function createActionLog({
   actionKind: string
   metadata?: LogMetadata
 }) {
-  return new ActionLog({
+  return new Log<ActionLogContext>({
     parentConfigs: [...log.parentConfigs, log.getConfig()],
     metadata,
     root: log.root,
     context: {
+      type: "actionLog",
       actionName,
       actionKind,
     },
   })
 }
 
-export abstract class Log implements LogConfig {
+export class Log<C extends BaseContext = CoreLogContext | ActionLogContext> implements LogConfig<C> {
   public readonly showDuration?: boolean
-  public readonly type: "coreLog" | "actionLog"
   public readonly metadata?: LogMetadata
   public readonly key: string
-  public readonly parentConfigs: LogConfig[]
+  // TODO @eysi: Set better type
+  public readonly parentConfigs: LogConfig<any>[]
   public readonly timestamp: string
   public readonly root: Logger
   public readonly section?: string
   public readonly fixLevel?: LogLevel
-  public readonly entries: LogEntry[]
-  public readonly context: LogContext
+  public readonly entries: LogEntry<C>[]
+  public readonly context: C
 
-  constructor(params: LogConstructor) {
+  constructor(params: LogConstructor<C>) {
     this.key = uniqid()
     this.entries = []
     this.timestamp = new Date().toISOString()
@@ -193,30 +181,7 @@ export abstract class Log implements LogConfig {
     this.showDuration = params.showDuration || false
   }
 
-  protected abstract createLogEntry(params: CreateLogEntryParams): LogEntry
-
-  /**
-   * Create a new Log with the same context, optionally overwriting some fields.
-   */
-  abstract createLog(params: CreateLogParams): LogType
-
-  private log(params: CreateLogEntryParams) {
-    const entry = this.createLogEntry(params)
-    if (this.root.storeEntries) {
-      this.entries.push(entry)
-    }
-    this.root.log(entry)
-    return this
-  }
-
-  private withDuration(params: CreateLogEntryParams) {
-    if (this.showDuration && params.msg) {
-      params.msg = params.msg + ` (in ${this.getDuration(1)} sec)`
-    }
-    return params
-  }
-
-  protected createLogEntryBase(params: CreateLogEntryParams): Omit<LogEntry, "type"> {
+  protected createLogEntry(params: CreateLogEntryParams): LogEntry<C> {
     const level = this.fixLevel ? Math.max(this.fixLevel, params.level) : params.level
     const section = params.section || this.section
 
@@ -226,8 +191,8 @@ export abstract class Log implements LogConfig {
     }
 
     return {
-      section,
       ...params,
+      section,
       parentLogKey: this.key,
       context: this.context,
       level,
@@ -235,6 +200,42 @@ export abstract class Log implements LogConfig {
       metadata,
       key: uniqid(),
     }
+  }
+
+  createLog(params: CreateLogParams<C> = {}) {
+    // TODO @eysi: Figure out a better way to do this
+    let context: CoreLogContext | ActionLogContext
+    if (params.name) {
+      context = { type: "coreLog", name: params.name }
+    } else {
+      context = this.context as CoreLogContext | ActionLogContext
+    }
+    return new Log({
+      metadata: params.metadata || this.metadata,
+      fixLevel: params.fixLevel || this.fixLevel,
+      section: params.section || this.section,
+      context,
+      root: this.root,
+      parentConfigs: [...this.parentConfigs, this.getConfig()],
+      showDuration: params.showDuration,
+    })
+  }
+
+  private log(params: CreateLogEntryParams) {
+    const entry = this.createLogEntry(params)
+    if (this.root.storeEntries) {
+      this.entries.push(entry)
+    }
+    // TODO @eysi: Fix any cast
+    this.root.log(<any>entry)
+    return this
+  }
+
+  private withDuration(params: CreateLogEntryParams) {
+    if (this.showDuration && params.msg) {
+      params.msg = params.msg + ` (in ${this.getDuration(1)} sec)`
+    }
+    return params
   }
 
   private resolveCreateParams(level: LogLevel, params: string | LogParams): CreateLogEntryParams {
@@ -282,7 +283,7 @@ export abstract class Log implements LogConfig {
     return this.info(config)
   }
 
-  getConfig(): LogConfig {
+  getConfig(): LogConfig<C> {
     return {
       context: this.context,
       metadata: this.metadata,
@@ -290,7 +291,6 @@ export abstract class Log implements LogConfig {
       key: this.key,
       section: this.section,
       fixLevel: this.fixLevel,
-      type: this.type,
     }
   }
 
@@ -312,7 +312,7 @@ export abstract class Log implements LogConfig {
    *
    *   log.toString((entry) => entry.level <= LogLevel.info)
    */
-  toString(filter?: (log: LogEntry) => boolean) {
+  toString(filter?: (log: LogEntry<C>) => boolean) {
     return this.getChildLogEntries()
       .filter((entry) => (filter ? filter(entry) : true))
       .map((entry) => entry.msg)
@@ -329,78 +329,5 @@ export abstract class Log implements LogConfig {
   toSanitizedValue() {
     // TODO: add a bit more info here
     return "<Log>"
-  }
-}
-
-export class CoreLog extends Log {
-  public readonly type = "coreLog"
-  public entries: CoreLogEntry[]
-  public context: CoreLogContext
-
-  constructor(params: CoreLogConstructor) {
-    super(params)
-  }
-
-  createLogEntry(params: CreateLogEntryParams): CoreLogEntry {
-    return {
-      ...this.createLogEntryBase(params),
-      type: "coreLogEntry",
-      context: this.context,
-    }
-  }
-
-  /**
-   * Create a new CoreLog with the same context, optionally overwriting some fields.
-   *
-   * TODO @eysi: It's a little awkward that you can overwrite the context of CoreLogs
-   * but not others. Consider having a helper function for creating new CoreLogs and
-   * using this only for cloning the context like we do e.g. with the ActionLog.
-   */
-  createLog(params: CreateCoreLogParams = {}) {
-    return new CoreLog({
-      metadata: params.metadata || this.metadata,
-      fixLevel: params.fixLevel || this.fixLevel,
-      section: params.section || this.section,
-      // The name is passed directly to the function to simplify call sites.
-      context: {
-        name: params.name || this.context.name,
-      },
-      root: this.root,
-      parentConfigs: [...this.parentConfigs, this.getConfig()],
-      showDuration: params.showDuration,
-    })
-  }
-}
-
-export class ActionLog extends Log {
-  public readonly type = "actionLog"
-  public readonly showDuration = true
-  public readonly context: ActionLogContext
-  public readonly entries: ActionLogEntry[]
-
-  constructor(params: ActionLogConstructor) {
-    super(params)
-  }
-
-  createLogEntry(params: CreateLogEntryParams): ActionLogEntry {
-    return {
-      ...this.createLogEntryBase(params),
-      type: "actionLogEntry" as const,
-      context: this.context,
-    }
-  }
-
-  /**
-   * Create a new ActionLog with the same context, optionally overwriting some fields.
-   */
-  createLog(params: CreateActionLogParams = {}) {
-    return new ActionLog({
-      metadata: params.metadata || this.metadata,
-      fixLevel: params.fixLevel || this.fixLevel,
-      // Action log context is always inherited and does not get overwritten.
-      context: this.context,
-      root: this.root,
-      parentConfigs: [...this.parentConfigs, this.getConfig()],
-    })
   }
 }
